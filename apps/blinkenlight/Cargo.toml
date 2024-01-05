@@ -6,8 +6,8 @@ name = "blinkenlight"
 version = "0.1.0"
 
 [dependencies]
-cortex-m = "0.6.0"
-cortex-m-rt = "0.6.10"
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.3"
 panic-halt = "0.2.0"
 mb9bf61xt = { git = "https://github.com/jeffglaum/fm3.git" }
 
