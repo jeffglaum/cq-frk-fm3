@@ -10,7 +10,7 @@ use mb9bf61xt;
 
 
 const BAUD_RATE: u32 = 115200;                          // Baud Rate.
-const MASTER_CLOCK_FREQ: u32 = 4000000;                 // Master clock (HCLK) is the main (external) clock.
+const MASTER_CLOCK_FREQ: u32 = 4000000;                 // Master clock (HCLK) is the main (external) clock.  CQ-FRK-FM3 uses a 4Mhz xtal.
 const BUS_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1;      // Bus clock divisors are all 1:1 (HW reset) so PCLK = (HCLK/1).
 
 
@@ -19,17 +19,29 @@ fn initclock() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
     let clock = p.CRG;
 
+    // Force-clear all possible oscillization stabilization wait interrupt causes (main, sub, and PLL).
+    clock.int_clr().write(|w| unsafe {w.bits(0x7)});
+
+    // Set the main oscillator stabilization wait time (use default ~500ns).
+    clock.csw_tmr().write(|w| unsafe {w.bits(0)});
+
+    // Set the oscillation stabilization wait interrupt.
+    clock.int_enr().modify(|_,w| w.mcse().set_bit());
+
     // Enable the main (external) clock oscillator.
     clock.scm_ctl().modify(|_,w| w.mosce().set_bit());
 
-    // TBD: this is a hack to avoid having to set up the oscillator stabilization interrupt.
-    asm::delay(5000);
+    // Checkk the main oscillator stabile bit.
+    // TODO: anything to be done with a time-out here?
+    while clock.scm_str().read().mordy() != true {}
 
     // Configure the master clock to use the main (external clock).
     clock.scm_ctl().modify(|_,w| unsafe {w.rcs().bits(0x1)});
 
-    // TBD: this is a hack to avoid having to set up the oscillator stabilization interrupt.
-    asm::delay(5000);
+    // Wait for master clock selection to take effect.
+    // TODO: anything to be done with a time-out here?
+    while clock.scm_str().read().rcm() != 0x1 {}
+
 }
 
 fn initpins() {
@@ -92,7 +104,7 @@ fn inituart() {
     uart4.uart_uart_fcr0().modify(|_,w| unsafe {w.bits(0)});       // Disable FIFOs.
     uart4.uart_uart_fcr1().modify(|_,w| unsafe {w.bits(0)});       //
 
-    // TBD: Ignoring FBYTE1 and FBYTE2 registers for now since the FIFOs are disabled.
+    // TODO: Ignoring FBYTE1 and FBYTE2 registers for now since the FIFOs are disabled.
 
     // Serial Control Register (SCR).
     uart4.uart_uart_scr().modify(|_,w| w.tbie().clear_bit());      // Disable transmit bus idle interrupt.
@@ -126,18 +138,16 @@ fn main() -> ! {
 
     loop {
         // Send characters over UART.
+        // TODO: write routine should use FIFO and check for space instead of just waiting.
         writeuart(b'T');
         asm::delay(500);
-        writeuart(b'e');
+        writeuart(b'E');
         asm::delay(500);
-        writeuart(b's');
+        writeuart(b'S');
         asm::delay(500);
-        writeuart(b't');
+        writeuart(b'T');
         asm::delay(500);
         writeuart(b' ');
-
-        // Delay 5000 clock cycles. 
-        // TBD: write routine should use FIFO and check for space instead of just waiting.
-        asm::delay(5000);
+        asm::delay(500);
     }
 }
