@@ -4,7 +4,6 @@
 // pick a panicking behavior
 use panic_halt as _;
 
-use cortex_m::asm;
 use cortex_m_rt::entry;
 use mb9bf61xt;
 
@@ -12,7 +11,22 @@ use mb9bf61xt;
 const BAUD_RATE: u32 = 115200;                          // Baud Rate.
 const MASTER_CLOCK_FREQ: u32 = 4000000;                 // Master clock (HCLK) is the main (external) clock.  CQ-FRK-FM3 uses a 4Mhz xtal.
 const BUS_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1;      // Bus clock divisors are all 1:1 (HW reset) so PCLK = (HCLK/1).
+const MAX_TX_FIFO_DEPTH: u8 = 16;                       // Maximum transmit (and receive) FIFO depth is 16 x 9 bits.
 
+
+fn disablewdg() {
+
+    let p = unsafe { mb9bf61xt::Peripherals::steal() };
+    let wdg = p.HWWDT;
+
+    // Unlock the watchdog registers.
+    wdg.wdg_lck().write(|w| unsafe {w.bits(0x1ACCE551)});
+    wdg.wdg_lck().write(|w| unsafe {w.bits(0xE5331AAE)});
+
+    // Disable the hardware watchdog timer.
+    wdg.wdg_ctl().modify(|_,w| w.inten().clear_bit());
+
+}
 
 fn initclock() {
 
@@ -78,12 +92,15 @@ fn inituart() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
     let uart4 = p.MFS4;
 
+    // Initialize internal UART state.
+    uart4.uart_uart_scr().modify(|_,w| w.upcl().clear_bit());      // Programmable clear.
+
     // Serial Mode register (SMR).
+    uart4.uart_uart_smr().modify(|_,w| unsafe {w.md().bits(0)});   // Async normal mode.
     uart4.uart_uart_smr().modify(|_,w| w.soe().set_bit());         // Serial data output enable.
     uart4.uart_uart_smr().modify(|_,w| w.bds().clear_bit());       // LSB first.
     uart4.uart_uart_smr().modify(|_,w| w.sbl().clear_bit());       // Select either 1 or 3 stop bits (ESCR.ESBL decides).
     uart4.uart_uart_smr().modify(|_,w| w.wucr().clear_bit());      // Disable the wake-up function.
-    uart4.uart_uart_smr().modify(|_,w| unsafe {w.md().bits(0)});   // Async normal mode.
 
     // Baud Rate Generator registers (BGR0 and BGR1).
     // Baud rate formula: Reload Value = ((Bus Clock Frequency / Baud Rate) - 1).
@@ -101,10 +118,21 @@ fn inituart() {
     uart4.uart_uart_escr().modify(|_,w| w.flwen().clear_bit());    // Disable hardware flow control.
 
     // FIFO Control registers (FCR0 and FCR1).
-    uart4.uart_uart_fcr0().modify(|_,w| unsafe {w.bits(0)});       // Disable FIFOs.
-    uart4.uart_uart_fcr1().modify(|_,w| unsafe {w.bits(0)});       //
+    uart4.uart_uart_fcr1().modify(|_,w| w.fsel().set_bit());       // Transmit is FIFO2 and Receive is FIFO1.
+    uart4.uart_uart_fcr1().modify(|_,w| w.ftie().clear_bit());     // Disable transmit FIFO interrupt.
+    uart4.uart_uart_fcr1().modify(|_,w| w.friie().clear_bit());    // Disable receive FIFO idle detection.
+    uart4.uart_uart_fcr1().modify(|_,w| w.flste().clear_bit());    // Disable data loss detection.
+    uart4.uart_uart_fcr0().modify(|_,w| w.fcl1().set_bit());       // Reset FIFO1 (receive) state.
+    uart4.uart_uart_fcr0().modify(|_,w| w.fcl2().set_bit());       // Reset FIFO2 (transmit) state.
+    uart4.uart_uart_fcr0().modify(|_,w| w.fe1().set_bit());        // Enable FIFO1 (receive) operations.
+    uart4.uart_uart_fcr0().modify(|_,w| w.fe2().set_bit());        // Enable FIFO2 (transmit) operations.
 
-    // TODO: Ignoring FBYTE1 and FBYTE2 registers for now since the FIFOs are disabled.
+    // FIFO Byte register (FBYTE1 and FBYTE2) - set the receive FIFO level that generates a receive interrupt.
+    // NOTE: a read-modify-write cannot be used for this register.
+    // Reset the transmit FIFO FBYTE value.
+    uart4.uart_uart_fbyte2().write(|w| unsafe {w.bits(0)});
+    // Set the interrupt to trigger at the half-full point.
+    uart4.uart_uart_fbyte1().write(|w| unsafe {w.bits(MAX_TX_FIFO_DEPTH / 2)});
 
     // Serial Control Register (SCR).
     uart4.uart_uart_scr().modify(|_,w| w.tbie().clear_bit());      // Disable transmit bus idle interrupt.
@@ -120,12 +148,19 @@ fn writeuart(c : u8) {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
     let uart4 = p.MFS4;
 
-    //Send the character.
+    // Per the datasheet, only write to the FIFO when it's empty.
+    // TBD: batch write.
+    while uart4.uart_uart_ssr().read().tdre() == false {}
+
+    // Send the character.
     uart4.uart_uart_tdr().write(|w| unsafe {w.bits(c.into())});
 }
 
 #[entry]
 fn main() -> ! {
+
+    // Disable the hardware watchdog timer.
+    disablewdg();
 
     // Initialize the master clock to use the main (external) clock.
     initclock();
@@ -140,14 +175,9 @@ fn main() -> ! {
         // Send characters over UART.
         // TODO: write routine should use FIFO and check for space instead of just waiting.
         writeuart(b'T');
-        asm::delay(500);
         writeuart(b'E');
-        asm::delay(500);
         writeuart(b'S');
-        asm::delay(500);
         writeuart(b'T');
-        asm::delay(500);
         writeuart(b' ');
-        asm::delay(500);
     }
 }
