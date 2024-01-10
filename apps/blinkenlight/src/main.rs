@@ -7,25 +7,22 @@ use cortex_m_rt::{entry, exception};
 use cortex_m::peripheral::{syst, Peripherals};
 use mb9bf61xt;
 
-// SysTick timer interval (in ms).
-const SYSTICK_PERIOD: u32 = 1_000;
+// SysTick timer interval: 1s (based on 4MHz CPU clock).
+const SYSTICK_PERIOD: u32 = 4_000_000;
 
-// SysTick exception handler.
-#[exception]
-fn SysTick() {
+
+fn disable_wdg() {
 
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
-    let gpio = p.GPIO;
+    let wdg = p.HWWDT;
 
-    // Invert the output.
-    let current_pf3_val  = gpio.pdorf().read().pf3().bit_is_set();
-    gpio.pdorf().write(|w| {w.pf3().bit(! current_pf3_val)});
+    // Unlock the watchdog registers.
+    wdg.wdg_lck().write(|w| unsafe {w.bits(0x1ACCE551)});
+    wdg.wdg_lck().write(|w| unsafe {w.bits(0xE5331AAE)});
 
-    // Reset the SysTick timer.
-    let cp = unsafe { Peripherals::steal() };
-    let mut systick = cp.SYST;
+    // Disable the hardware watchdog timer.
+    wdg.wdg_ctl().modify(|_,w| w.inten().clear_bit());
 
-    systick.set_reload(SYSTICK_PERIOD);
 }
 
 fn initialize_gpio() {
@@ -54,12 +51,15 @@ fn initialize_systick() {
     systick.set_clock_source(syst::SystClkSource::Core);
     systick.set_reload(SYSTICK_PERIOD);
     systick.clear_current();
-    systick.enable_interrupt();
     systick.enable_counter();
+    systick.enable_interrupt();
 }
 
 #[entry]
 fn main() -> ! {
+
+    // Disable hardware watchdog.
+    disable_wdg();
 
     // Initialize the GPIO driving the external LED.
     initialize_gpio();
@@ -68,4 +68,18 @@ fn main() -> ! {
     initialize_systick();
 
     loop {}
+}
+
+// SysTick exception handler.
+// NOTE: not sure why but this empirically needs to be defined after main.
+#[exception]
+fn SysTick() {
+
+    let p = unsafe { mb9bf61xt::Peripherals::steal() };
+    let gpio = p.GPIO;
+
+    // Invert the output.
+    let current_pf3_val  = gpio.pdorf().read().pf3().bit_is_set();
+    gpio.pdorf().write(|w| {w.pf3().bit(! current_pf3_val)});
+
 }
