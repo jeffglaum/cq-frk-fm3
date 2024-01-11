@@ -4,8 +4,10 @@
 // pick a panicking behavior
 use panic_halt as _;
 
-use cortex_m_rt::entry;
+use cortex_m;
+use cortex_m_rt::{entry, interrupt};
 use mb9bf61xt;
+use mb9bf61xt::Interrupt as interrupt;
 
 
 const BAUD_RATE: u32 = 115200;                          // Baud Rate.
@@ -87,6 +89,24 @@ fn initpins() {
 
 }
 
+fn initgpio() {
+
+    let p = unsafe { mb9bf61xt::Peripherals::steal() };
+    let gpio = p.GPIO;
+
+    // Set to GPIO mode.
+    gpio.pfrf().write(|w| {w.pf3().clear_bit()});
+
+    // Set to open-drain mode.
+    gpio.pzrf().write(|w| {w.pf3().set_bit()});
+
+    // Set to output.
+    gpio.ddrf().write(|w| {w.pf3().set_bit()});
+
+    // Set to high level.
+    gpio.pdorf().write(|w| {w.pf3().set_bit()});
+}
+
 fn inituart() {
 
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
@@ -137,7 +157,7 @@ fn inituart() {
     // Serial Control Register (SCR).
     uart4.uart_uart_scr().modify(|_,w| w.tbie().clear_bit());      // Disable transmit bus idle interrupt.
     uart4.uart_uart_scr().modify(|_,w| w.tie().clear_bit());       // Disable transmit interrupt.
-    uart4.uart_uart_scr().modify(|_,w| w.rie().clear_bit());       // Disable receive interrupt.
+    uart4.uart_uart_scr().modify(|_,w| w.rie().set_bit());         // Enable receive interrupt.
     uart4.uart_uart_scr().modify(|_,w| w.txe().set_bit());         // Enable transmitter.
     uart4.uart_uart_scr().modify(|_,w| w.rxe().set_bit());         // Enable receiver.
 
@@ -149,7 +169,7 @@ fn writeuart(c : u8) {
     let uart4 = p.MFS4;
 
     // Per the datasheet, only write to the FIFO when it's empty.
-    // TBD: batch write.
+    // TODO: batch writes.
     while uart4.uart_uart_ssr().read().tdre() == false {}
 
     // Send the character.
@@ -162,6 +182,9 @@ fn main() -> ! {
     // Disable the hardware watchdog timer.
     disablewdg();
 
+    // Initialize GPIO used for the LED.
+    initgpio();
+
     // Initialize the master clock to use the main (external) clock.
     initclock();
 
@@ -171,13 +194,34 @@ fn main() -> ! {
     // Initialize the UART controller.
     inituart();
 
+    // Enable the MFS4RX (UART RX) interrupt.
+    unsafe {cortex_m::peripheral::NVIC::unmask(interrupt::MFS4RX)};
+
     loop {
         // Send characters over UART.
-        // TODO: write routine should use FIFO and check for space instead of just waiting.
         writeuart(b'T');
         writeuart(b'E');
         writeuart(b'S');
         writeuart(b'T');
         writeuart(b' ');
     }
+}
+
+#[interrupt]
+fn MFS4RX() {
+
+    let p = unsafe { mb9bf61xt::Peripherals::steal() };
+    let gpio = p.GPIO;
+    let uart4 = p.MFS4;
+
+    // Invert the LED output.
+    let current_pf3_val  = gpio.pdorf().read().pf3().bit_is_set();
+    gpio.pdorf().write(|w| {w.pf3().bit(! current_pf3_val)});
+
+    // Read everything out of the receive FIFO.
+    // TODO: need to handle overrun, framing, and possibly parity errors.
+    while uart4.uart_uart_ssr().read().rdrf() == true {
+        uart4.uart_uart_rdr().read();
+    }
+
 }
