@@ -15,20 +15,18 @@ const BUS_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1; // Bus clock divisors are all
 const MAX_TX_FIFO_DEPTH: u8 = 16; // Maximum transmit (and receive) FIFO depth is 16 x 9 bits.
 
 #[allow(unused_macros)]
-// TODO: implement text formatter.
 macro_rules! print {
     ($($args:tt)*) => {
-        _serial_print($($args.as_bytes())*);
+        _serial_printfmt(core::format_args!($($args)*));
     }
 }
 
 #[allow(unused_macros)]
-// TODO: implement text formatter.
 macro_rules! println {
     ($($args:tt)*) => {
-        _serial_print($($args.as_bytes())*);
-        _serial_print("\n".as_bytes());
-    }
+        _serial_printfmt(core::format_args!($($args)*));
+        _serial_printfmt(core::format_args!("\n"));
+    };
 }
 
 fn disablewdg() {
@@ -168,9 +166,10 @@ impl Mb9bf61xtUart {
         // Reset the transmit FIFO FBYTE value.
         uart4.uart_uart_fbyte2().write(|w| unsafe { w.bits(0) });
         // Set the interrupt to trigger at the half-full point.
-        uart4
-            .uart_uart_fbyte1()
-            .write(|w| unsafe { w.bits(MAX_TX_FIFO_DEPTH / 2) });
+        // uart4
+        //     .uart_uart_fbyte1()
+        //     .write(|w| unsafe { w.bits(MAX_TX_FIFO_DEPTH / 2) });
+        uart4.uart_uart_fbyte1().write(|w| unsafe { w.bits(1) });
 
         // Serial Control Register (SCR).
         uart4.uart_uart_scr().modify(|_, w| w.tbie().clear_bit()); // Disable transmit bus idle interrupt.
@@ -207,6 +206,16 @@ impl Mb9bf61xtUart {
     }
 }
 
+fn print_banner() {
+    println!("");
+    println!("     _____           _       __   __  ___            _ __            ");
+    println!("    / ___/___  _____(_)___ _/ /  /  |/  /___  ____  (_) /_____  _____");
+    println!("    \\__ \\/ _ \\/ ___/ / __ `/ /  / /|_/ / __ \\/ __ \\/ / __/ __ \\/ ___/");
+    println!("   ___/ /  __/ /  / / /_/ / /  / /  / / /_/ / / / / / /_/ /_/ / /    ");
+    println!("  /____/\\___/_/  /_/\\__,_/_/  /_/  /_/\\____/_/ /_/_/\\__/\\____/_/     ");
+    println!("");
+}
+
 #[entry]
 fn main() -> ! {
     // Disable the hardware watchdog timer.
@@ -227,10 +236,13 @@ fn main() -> ! {
     // Enable the MFS4RX (UART RX) interrupt.
     unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS4RX) };
 
-    loop {
-        // Send string over UART.
-        println!("Hello World!");
-    }
+    // Print banner.
+    print_banner();
+    println!("Version 0.1, Jeff Glaum <jeffglaum@live.com>");
+    println!("");
+    print!("> ");
+
+    loop {}
 }
 
 impl embedded_io::ErrorType for Mb9bf61xtUart {
@@ -252,6 +264,10 @@ fn _serial_print(bytes: &[u8]) {
     let _result = Mb9bf61xtUart.write_all(bytes);
 }
 
+fn _serial_printfmt(fmt: core::fmt::Arguments<'_>) {
+    let _result = Mb9bf61xtUart.write_fmt(fmt);
+}
+
 #[interrupt]
 fn MFS4RX() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
@@ -265,6 +281,7 @@ fn MFS4RX() {
     // Read everything out of the receive FIFO.
     // TODO: need to handle overrun, framing, and possibly parity errors.
     while uart4.uart_uart_ssr().read().rdrf() == true {
-        uart4.uart_uart_rdr().read();
+        let c = uart4.uart_uart_rdr().read().bits() as u8;
+        _serial_print(&[c]);
     }
 }
