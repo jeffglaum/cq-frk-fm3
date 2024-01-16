@@ -11,6 +11,7 @@ cortex-m-rt = { version = "0.7.3", features = ["device"] }
 panic-halt = "0.2.0"
 mb9bf61xt = { git = "https://github.com/jeffglaum/fm3.git", features = ["rt"] }
 embedded-io = "0.6.1"
+circular-buffer = { version = "0.1.6", default-features = false, features = [] }
 
 # this lets you use `cargo fix`!
 [[bin]]

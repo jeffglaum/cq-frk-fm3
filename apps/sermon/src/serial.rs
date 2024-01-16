@@ -1,3 +1,5 @@
+use circular_buffer::CircularBuffer;
+use cortex_m;
 use cortex_m_rt::interrupt;
 use embedded_io::Write;
 use mb9bf61xt;
@@ -7,6 +9,7 @@ const MASTER_CLOCK_FREQ: u32 = 4000000; // Master clock (HCLK) is the main (exte
 const BUS_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1; // Bus clock divisors are all 1:1 (HW reset) so PCLK = (HCLK/1).
 const BAUD_RATE: u32 = 115200; // Baud Rate.
 const MAX_TX_FIFO_DEPTH: u8 = 16; // Maximum transmit (and receive) FIFO depth is 16 x 9 bits.
+const LINE_BUFFER_SIZE: usize = 32; // UART receive buffer size in bytes.
 
 #[allow(unused_macros)]
 #[macro_export]
@@ -27,8 +30,15 @@ macro_rules! println {
 
 pub struct Mb9bf61xtUart;
 
+static mut INPUT_BUFFER: CircularBuffer<LINE_BUFFER_SIZE, u8> =
+    CircularBuffer::<LINE_BUFFER_SIZE, u8>::new();
+
 impl Mb9bf61xtUart {
-    pub fn init_uart() {
+    pub fn new() -> Self {
+        return Self {};
+    }
+
+    pub fn init_uart(&mut self) {
         let p = unsafe { mb9bf61xt::Peripherals::steal() };
         let uart4 = p.MFS4;
 
@@ -89,6 +99,39 @@ impl Mb9bf61xtUart {
         uart4.uart_uart_scr().modify(|_, w| w.rie().set_bit()); // Enable receive interrupt.
         uart4.uart_uart_scr().modify(|_, w| w.txe().set_bit()); // Enable transmitter.
         uart4.uart_uart_scr().modify(|_, w| w.rxe().set_bit()); // Enable receiver.
+
+        // Enable the MFS4RX (UART RX) interrupt.
+        unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS4RX) };
+    }
+
+    // NOTE: this is a blocking call.
+    pub fn read_uart_bytes(buf: &mut [u8]) -> usize {
+        // Disable the MFS4RX (UART RX) interrupt.
+        // TODO: disable rx interrupts to avoid circular buffer race condition.
+        //cortex_m::peripheral::NVIC::mask(interrupt::MFS4RX);
+
+        // Wait until there's at least one character.
+        unsafe {
+            while INPUT_BUFFER.is_empty() {
+                // NOP so Rust compiler doesn't optimize-away this loop.
+                core::arch::asm!("nop");
+            }
+        }
+
+        let mut i = 0;
+        loop {
+            let c = unsafe { INPUT_BUFFER.pop_back() };
+            if c == None {
+                break;
+            }
+            buf[i] = c.unwrap();
+            i += 1;
+        }
+
+        // Enable the MFS4RX (UART RX) interrupt.
+        //unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS4RX) };
+
+        return i;
     }
 
     pub fn write_uart_string(buf: &[u8]) -> usize {
@@ -100,12 +143,7 @@ impl Mb9bf61xtUart {
         while uart4.uart_uart_ssr().read().tdre() == false {}
 
         let buf_len = buf.len();
-        // TODO: how to get min without std?
-        let xmit_len = if buf_len < MAX_TX_FIFO_DEPTH.into() {
-            buf_len
-        } else {
-            MAX_TX_FIFO_DEPTH.into()
-        };
+        let xmit_len = core::cmp::min(buf_len, MAX_TX_FIFO_DEPTH.into());
 
         for i in 0..xmit_len {
             // Send the character.
@@ -133,6 +171,13 @@ impl embedded_io::Write for Mb9bf61xtUart {
     }
 }
 
+impl embedded_io::Read for Mb9bf61xtUart {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        let read_len = Mb9bf61xtUart::read_uart_bytes(buf);
+        Ok(read_len)
+    }
+}
+
 pub fn serial_print(bytes: &[u8]) {
     let _result = Mb9bf61xtUart.write_all(bytes);
 }
@@ -144,17 +189,14 @@ pub fn serial_printfmt(fmt: core::fmt::Arguments<'_>) {
 #[interrupt]
 fn MFS4RX() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
-    let gpio = p.GPIO;
     let uart4 = p.MFS4;
-
-    // Invert the LED output.
-    let current_pf3_val = gpio.pdorf().read().pf3().bit_is_set();
-    gpio.pdorf().write(|w| w.pf3().bit(!current_pf3_val));
 
     // Read everything out of the receive FIFO.
     // TODO: need to handle overrun, framing, and possibly parity errors.
     while uart4.uart_uart_ssr().read().rdrf() == true {
         let c = uart4.uart_uart_rdr().read().bits() as u8;
         crate::serial::serial_print(&[c]);
+        // TODO - why is this unsafe?
+        unsafe { crate::serial::INPUT_BUFFER.push_front(c) };
     }
 }

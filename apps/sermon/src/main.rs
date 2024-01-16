@@ -3,13 +3,14 @@
 
 use panic_halt as _;
 
-use cortex_m;
 use cortex_m_rt::entry;
+use embedded_io::Read;
 use mb9bf61xt;
-use mb9bf61xt::Interrupt as interrupt;
 
 mod serial;
 pub use crate::serial::Mb9bf61xtUart;
+
+const INPUT_LINE_LENGTH: usize = 40;
 
 fn disable_wdg() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
@@ -78,23 +79,6 @@ fn init_pins() {
     gpio.epfr08().write(|w| unsafe { w.bits(current_epfr08) });
 }
 
-fn init_gpio() {
-    let p = unsafe { mb9bf61xt::Peripherals::steal() };
-    let gpio = p.GPIO;
-
-    // Set to GPIO mode.
-    gpio.pfrf().write(|w| w.pf3().clear_bit());
-
-    // Set to open-drain mode.
-    gpio.pzrf().write(|w| w.pf3().set_bit());
-
-    // Set to output.
-    gpio.ddrf().write(|w| w.pf3().set_bit());
-
-    // Set to high level.
-    gpio.pdorf().write(|w| w.pf3().set_bit());
-}
-
 fn print_banner() {
     println!("");
     println!("  ____            _       _   __  __             _ _             ");
@@ -105,13 +89,29 @@ fn print_banner() {
     println!("");
 }
 
+fn print_command_list() {
+    println!(" COMMANDS:");
+    println!(" ------------------------------------------------------------------------------------------------------------------");
+    println!(" <address>                       = displays the contents of a single address");
+    println!(" .<address>                      = displays the contents between the last opened location and the specified address");
+    println!(
+        " <address1>.<address2>           = displays the contents between address1 and address2"
+    );
+    println!(" <address1> <address2> <...>     = diplays the contents of address1, address2, ...");
+    println!(
+        " <address>:<data>                = writes the specified data to the specified address"
+    );
+    println!(" <address>:<data1> <data2> <...> = writes data1, data2, ... starting from the specified address");
+    println!(
+        " <address> R                     = executes code starting from the address specified"
+    );
+    println!("");
+}
+
 #[entry]
 fn main() -> ! {
     // Disable the hardware watchdog timer.
     disable_wdg();
-
-    // Initialize GPIO used for the LED.
-    init_gpio();
 
     // Initialize the master clock to use the main (external) clock.
     init_clock();
@@ -120,16 +120,261 @@ fn main() -> ! {
     init_pins();
 
     // Initialize the UART controller.
-    Mb9bf61xtUart::init_uart();
+    let mut uart4 = Mb9bf61xtUart::new();
+    uart4.init_uart();
 
-    // Enable the MFS4RX (UART RX) interrupt.
-    unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS4RX) };
-
-    // Print banner.
+    // Print banner and command list.
     print_banner();
     println!(" version 0.1, Jeff Glaum <jeffglaum@live.com>");
     println!("");
-    print!("> ");
+    print_command_list();
 
-    loop {}
+    let mut line_buf: [u8; INPUT_LINE_LENGTH] = [0; INPUT_LINE_LENGTH];
+
+    loop {
+        print!("> ");
+
+        // Read a full line from the UART.
+        let mut i = 0;
+        loop {
+            let _bytes_read = uart4.read(&mut line_buf[i..]);
+            if line_buf[i] == b'\n' {
+                break;
+            }
+            i += _bytes_read.unwrap();
+            if i >= INPUT_LINE_LENGTH {
+                i = INPUT_LINE_LENGTH;
+                break;
+            }
+        }
+        let s = core::str::from_utf8(&line_buf[0..i]).unwrap();
+
+        // Process the command line.
+        process_cmdline(s);
+    }
+}
+
+// Command line parser tokens.
+enum Tokens {
+    EOF,
+    Number,
+    SeparatorDot,
+    SeparatorColon,
+    CommandRun,
+}
+
+// Command line processing command states.
+enum States {
+    None,
+    SetAddress,
+    DisplayRange,
+    WriteDataAtAddress,
+    Invalid,
+}
+
+fn _print_tokens(token: Tokens, val: u32, index: usize) {
+    if matches!(token, Tokens::Number) {
+        println!("Token: Number, Value: 0x{:x}, Index: {}", val, index);
+    } else if matches!(token, Tokens::SeparatorColon) {
+        println!("Token: SeparatorColon, Index: {}", index);
+    } else if matches!(token, Tokens::SeparatorDot) {
+        println!("Token: SeparatorDot, Index: {}", index);
+    } else if matches!(token, Tokens::CommandRun) {
+        println!("Token: CommandRun, Index: {}", index);
+    } else if matches!(token, Tokens::EOF) {
+        println!("Token: EOF, Index: {}", index);
+    } else {
+        println!("ERROR: unknown token.");
+    }
+}
+
+// Last address opened.
+static mut OPENED_ADDRESS: u32 = 5;
+
+fn process_cmdline(s: &str) {
+    let mut i = 0;
+    let mut current_state: States = States::None;
+
+    // Commands mimic the Apple 1 Monitor (a.k.a. Wozmon).
+    //
+    // <address>                       = displays the contents of a single address (and sets the opened location).
+    // .<address>                      = displays the contents between the last opened location and the specified end address.
+    // <address1>.<address2>           = displays the contents between address1 and address2.
+    // <address1> <address2> <...>     = diplays the contents of address1, address2, ...
+    // <address>:<data>                = writes data to the specified address.
+    // <address>:<data1> <data2> <...> = writes data1, data2, ... starting from the address specified.
+    // <address> R                     = executes code starting from the address specified.
+    //
+    loop {
+        let (index, val, token) = get_next_token(s, i).unwrap();
+
+        // For debugging...
+        //_print_tokens(token, val, index);
+
+        // Command parser state machine.
+        //
+        if matches!(current_state, States::None) {
+            // *** Starting state ***
+            if matches!(token, Tokens::SeparatorDot) {
+                // Display range from last opened address.
+                current_state = States::DisplayRange;
+            } else if matches!(token, Tokens::Number) {
+                // Open a new address.
+                unsafe {
+                    OPENED_ADDRESS = val;
+                }
+                current_state = States::SetAddress;
+            } else {
+                current_state = States::Invalid;
+            }
+        } else if matches!(current_state, States::SetAddress) {
+            // *** Addressed opened ***
+            if matches!(token, Tokens::SeparatorDot) {
+                // Display range from last opened address.
+                current_state = States::DisplayRange;
+            } else if matches!(token, Tokens::SeparatorColon) {
+                // Write data value at last opened address.
+                current_state = States::WriteDataAtAddress;
+            } else if matches!(token, Tokens::CommandRun) {
+                // Execute from address.
+                execute_address(unsafe { OPENED_ADDRESS });
+                current_state = States::None;
+            } else if matches!(token, Tokens::Number) {
+                // Display another address.
+                display_address(unsafe { OPENED_ADDRESS });
+                unsafe {
+                    OPENED_ADDRESS = val;
+                }
+                current_state = States::SetAddress;
+            } else if matches!(token, Tokens::EOF) {
+                // Display another address.
+                display_address(unsafe { OPENED_ADDRESS });
+                current_state = States::None;
+            } else {
+                current_state = States::Invalid;
+            }
+        } else if matches!(current_state, States::DisplayRange) {
+            // *** Display range ***
+            if matches!(token, Tokens::Number) {
+                // Display a range of addresses.
+                display_address_range(unsafe { OPENED_ADDRESS }, val);
+                current_state = States::None;
+            }
+        } else if matches!(current_state, States::WriteDataAtAddress) {
+            // *** Write data to opened address ***
+            if matches!(token, Tokens::Number) {
+                // Write one or more data values.
+                write_data_to_address(unsafe { OPENED_ADDRESS }, val);
+                // Automatically increment to next address in order.
+                unsafe {
+                    OPENED_ADDRESS += 4;
+                } // Size of u32.
+                current_state = States::WriteDataAtAddress;
+            } else {
+                current_state = States::Invalid;
+            }
+        }
+
+        // Done?
+        if matches!(token, Tokens::EOF) {
+            break;
+        }
+
+        // Capture the last index for the next tokenizer iteration.
+        i = index;
+    }
+}
+
+fn display_address_range(a: u32, b: u32) {
+    // Make sure the end address comes after the start address.
+    if b < a {
+        println!(
+            "ERROR: Start address 0x{:x} comes after end address 0x{:x}.",
+            a, b
+        );
+        return;
+    }
+
+    let n = (b - a) + 1;
+    let mut show_address: bool = true;
+    for i in 0..n {
+        if (a + i) % 16 == 0 {
+            println!("");
+            show_address = true;
+        }
+
+        if show_address {
+            print!("{:08X}: ", (a + i));
+            show_address = false;
+        }
+
+        // Display contents of memory.
+        let p = (a + i) as *const u8;
+        let n = unsafe { core::ptr::read(p) };
+        print!("{:02X} ", n);
+    }
+    println!("");
+}
+
+fn write_data_to_address(_a: u32, _d: u32) {
+    // TODO
+}
+
+fn display_address(_a: u32) {
+    // TODO
+}
+
+fn execute_address(_a: u32) {
+    // TODO
+}
+
+fn iswhitespace(c: char) -> bool {
+    if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+// TODO: how to handle returned values?
+fn get_next_token(s: &str, i: usize) -> Result<(usize, u32, Tokens), core::convert::Infallible> {
+    for x in i..s.len() {
+        let c = s.chars().nth(x).unwrap();
+
+        // Skip leading whitespace and other such characters.
+        if iswhitespace(c) {
+            continue;
+        }
+
+        // Check for dot.
+        if c == '.' {
+            return Ok((x + 1, 0, Tokens::SeparatorDot));
+        }
+
+        // Check for colon.
+        if c == ':' {
+            return Ok((x + 1, 0, Tokens::SeparatorColon));
+        }
+
+        // Check for command - currently only one (Run).
+        if c == 'R' || c == 'r' {
+            return Ok((x + 1, 0, Tokens::CommandRun));
+        }
+
+        // Must be a number - extract the slice and convert it.
+        for y in x..s.len() {
+            let c2 = s.chars().nth(y).unwrap();
+            if !iswhitespace(c2) && c2 != '.' && c2 != ':' {
+                continue;
+            }
+
+            let without_prefix = s[x..y].trim_start_matches("0x");
+            let num = u32::from_str_radix(without_prefix, 16).unwrap();
+
+            //let num = s[x..y].parse::<usize>().unwrap();
+            return Ok((y, num, Tokens::Number));
+        }
+    }
+
+    return Ok((0, 0, Tokens::EOF));
 }
