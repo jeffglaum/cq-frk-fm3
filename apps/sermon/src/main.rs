@@ -10,7 +10,7 @@ use mb9bf61xt;
 mod serial;
 pub use crate::serial::Mb9bf61xtUart;
 
-const INPUT_LINE_LENGTH: usize = 40;
+const INPUT_LINE_LENGTH: usize = 64;
 
 fn disable_wdg() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
@@ -138,6 +138,7 @@ fn main() -> ! {
         let mut i = 0;
         loop {
             let _bytes_read = uart4.read(&mut line_buf[i..]);
+            // TODO: handle both CR and LF anywhere within the slice.
             if line_buf[i] == b'\n' {
                 break;
             }
@@ -147,10 +148,44 @@ fn main() -> ! {
                 break;
             }
         }
+
+        // Line buffer may have BS characters in it, process those and remove non-printable characters.
+        clean_input(&mut line_buf);
+
         let s = core::str::from_utf8(&line_buf[0..i]).unwrap();
 
         // Process the command line.
         process_cmdline(s);
+    }
+}
+
+// TODO: how to get rid of buffer length here?
+fn clean_input(buf: &mut [u8; INPUT_LINE_LENGTH]) {
+    let len = buf.len();
+    let mut a = 0;
+    let mut b = 0;
+
+    // Process the string "in place" to remove backspace characters.
+    while a < len && b < len {
+        // Look for BS.
+        if buf[b] == 0x08 {
+            if a >= 2 {
+                a -= 2;
+            };
+        } else {
+            buf[a] = buf[b];
+        }
+        // Filter out any non-printable characters.
+        if buf[b] >= 32 || buf[b] <= 126 {
+            a += 1;
+        }
+        b += 1;
+    }
+
+    // Zero-fill the remainder of the buffer.
+    while a < len {
+        buf[a] = 0;
+        a += 1;
     }
 }
 
@@ -172,7 +207,7 @@ enum States {
     Invalid,
 }
 
-fn _print_tokens(token: Tokens, val: u32, index: usize) {
+fn _print_tokens(index: usize, val: u32, token: &Tokens) {
     if matches!(token, Tokens::Number) {
         println!("Token: Number, Value: 0x{:x}, Index: {}", val, index);
     } else if matches!(token, Tokens::SeparatorColon) {
@@ -209,7 +244,7 @@ fn process_cmdline(s: &str) {
         let (index, val, token) = get_next_token(s, i).unwrap();
 
         // For debugging...
-        //_print_tokens(token, val, index);
+        //_print_tokens(index, val, &token);
 
         // Command parser state machine.
         //
