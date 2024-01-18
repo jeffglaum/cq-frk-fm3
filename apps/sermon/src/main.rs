@@ -99,7 +99,7 @@ fn print_command_list() {
     );
     println!(" <address1> <address2> <...>     = diplays the contents of address1, address2, ...");
     println!(
-        " <address>:<data>                = writes the specified data to the specified address"
+        " <address>:<data>                = writes the specified data (as u32) to the specified address"
     );
     println!(" <address>:<data1> <data2> <...> = writes data1, data2, ... starting from the specified address");
     println!(
@@ -236,7 +236,7 @@ fn process_cmdline(s: &str) {
     // .<address>                      = displays the contents between the last opened location and the specified end address.
     // <address1>.<address2>           = displays the contents between address1 and address2.
     // <address1> <address2> <...>     = diplays the contents of address1, address2, ...
-    // <address>:<data>                = writes data to the specified address.
+    // <address>:<data>                = writes data (as u32) to the specified address.
     // <address>:<data1> <data2> <...> = writes data1, data2, ... starting from the address specified.
     // <address> R                     = executes code starting from the address specified.
     //
@@ -282,7 +282,7 @@ fn process_cmdline(s: &str) {
                 }
                 current_state = States::SetAddress;
             } else if matches!(token, Tokens::EOF) {
-                // Display another address.
+                // Display address.
                 display_address(unsafe { OPENED_ADDRESS });
                 current_state = States::None;
             } else {
@@ -351,16 +351,29 @@ fn display_address_range(a: u32, b: u32) {
     println!("");
 }
 
-fn write_data_to_address(_a: u32, _d: u32) {
-    // TODO
+fn write_data_to_address(a: u32, d: u32) {
+    // Write data to a specific address.
+    let p = a as *mut u32;
+    unsafe { core::ptr::write(p, d) };
 }
 
-fn display_address(_a: u32) {
-    // TODO
+fn display_address(a: u32) {
+    print!("{:08X}: ", a);
+
+    // Display contents of memory.
+    let p = a as *const u8;
+    let n = unsafe { core::ptr::read(p) };
+    println!("{:02X} ", n);
 }
 
-fn execute_address(_a: u32) {
-    // TODO
+fn execute_address(a: u32) {
+    let func_ptr = a as *const u32;
+
+    println!("Jumping to address 0x{:08X}...", a);
+    unsafe {
+        let func: extern "C" fn() = core::intrinsics::transmute(func_ptr);
+        func();
+    }
 }
 
 fn iswhitespace(c: char) -> bool {

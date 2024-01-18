@@ -107,11 +107,12 @@ impl Mb9bf61xtUart {
     // NOTE: this is a blocking call.
     pub fn read_uart_bytes(buf: &mut [u8]) -> usize {
         // Disable the MFS4RX (UART RX) interrupt.
-        // TODO: disable rx interrupts to avoid circular buffer race condition.
+        // TODO: disable rx interrupt to avoid circular buffer race condition.
         //cortex_m::peripheral::NVIC::mask(interrupt::MFS4RX);
 
         // Wait until there's at least one character.
         unsafe {
+            // TODO: use volatile-like access so the compiler doesn't optimize this loop away.
             while INPUT_BUFFER.is_empty() {
                 // NOP so Rust compiler doesn't optimize-away this loop.
                 core::arch::asm!("nop");
@@ -192,11 +193,11 @@ fn MFS4RX() {
     let uart4 = p.MFS4;
 
     // Read everything out of the receive FIFO.
-    // TODO: need to handle overrun, framing, and possibly parity errors.
+    // TODO: handle overrun, framing, and possibly parity errors.
     while uart4.uart_uart_ssr().read().rdrf() == true {
         let c = uart4.uart_uart_rdr().read().bits() as u8;
         crate::serial::serial_print(&[c]);
-        // TODO - why is this unsafe?
+        // TODO: why is this unsafe?
         unsafe { crate::serial::INPUT_BUFFER.push_front(c) };
     }
 }
