@@ -5,8 +5,9 @@ use embedded_io::Write;
 use mb9bf61xt;
 use mb9bf61xt::Interrupt as interrupt;
 
-const MASTER_CLOCK_FREQ: u32 = 4000000; // Master clock (HCLK) is the main (external) clock.  CQ-FRK-FM3 uses a 4Mhz xtal.
-const BUS_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1; // Bus clock divisors are all 1:1 (HW reset) so PCLK = (HCLK/1).
+const MASTER_CLOCK_FREQ: u32 = 144000000; // Master clock (CLKPLL) is the PLL clock (see main.rs).
+const BASE_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1; // Base clock divisor is 1 so HCLK = (CLKPLL/1).
+const PLK2_CLOCK_FREQ: u32 = BASE_CLOCK_FREQ / 2; // APB2 clock divisor is 2 so PCLK2 = (HCLK/2).
 const BAUD_RATE: u32 = 115200; // Baud Rate.
 const MAX_TX_FIFO_DEPTH: u8 = 16; // Maximum transmit (and receive) FIFO depth is 16 x 9 bits.
 const LINE_BUFFER_SIZE: usize = 32; // UART receive buffer size in bytes.
@@ -15,7 +16,7 @@ const LINE_BUFFER_SIZE: usize = 32; // UART receive buffer size in bytes.
 #[macro_export]
 macro_rules! print {
     ($($args:tt)*) => {
-        serial::serial_printfmt(core::format_args!($($args)*));
+        crate::serial::serial_printfmt(core::format_args!($($args)*));
     }
 }
 
@@ -23,8 +24,8 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($($args:tt)*) => {
-        serial::serial_printfmt(core::format_args!($($args)*));
-        serial::serial_printfmt(core::format_args!("\n"));
+        crate::serial::serial_printfmt(core::format_args!($($args)*));
+        crate::serial::serial_printfmt(core::format_args!("\n"));
     };
 }
 
@@ -57,8 +58,8 @@ impl Mb9bf61xtUart {
         // Baud Rate Generator registers (BGR0 and BGR1).
         // Baud rate formula: Reload Value = ((Bus Clock Frequency / Baud Rate) - 1).
         // NOTE: datasheet indicates that these must be handled as a single 16-bit write.
-        let reload_value = (BUS_CLOCK_FREQ / BAUD_RATE) - 1;
-        let bgr_value = (reload_value as u16) & !0x8000; // Clear upper bit (EXT) to indicate the internal clock should be used.
+        let reload_value = (PLK2_CLOCK_FREQ / BAUD_RATE) - 1;
+        let bgr_value = reload_value as u16; // Use internal clock (EXT=0).
         uart4
             .uart_uart_bgr()
             .write(|w| unsafe { w.bits(bgr_value) });
