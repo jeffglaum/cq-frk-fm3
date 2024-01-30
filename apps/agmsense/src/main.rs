@@ -24,6 +24,23 @@ fn disable_wdg() {
     wdg.wdg_ctl().modify(|_, w| w.inten().clear_bit());
 }
 
+fn initialize_gpio() {
+    let p = unsafe { mb9bf61xt::Peripherals::steal() };
+    let gpio = p.GPIO;
+
+    // Set to GPIO mode.
+    gpio.pfrf().write(|w| w.pf3().clear_bit());
+
+    // Set to open-drain mode.
+    gpio.pzrf().write(|w| w.pf3().set_bit());
+
+    // Set to output.
+    gpio.ddrf().write(|w| w.pf3().set_bit());
+
+    // Set to high level.
+    gpio.pdorf().write(|w| w.pf3().set_bit());
+}
+
 fn init_clock() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
     let clock = p.CRG;
@@ -160,6 +177,9 @@ fn main() -> ! {
 
     // Initialize UART pins.
     init_pins();
+
+    // Initialize GPIO for LED debugging.
+    initialize_gpio();
 
     // Initialize the UART controller.
     let mut uart4 = Mb9bf61xtUart::new();
