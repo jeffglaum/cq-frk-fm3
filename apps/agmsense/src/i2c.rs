@@ -9,7 +9,7 @@ use crate::println;
 // NOTE: the fm3 datasheet indicates that in I2C mode (operation mode 4), the bus clock can't be operated at less than
 // 8MHz and the I2C clock no faster than 400 kbps.
 const MASTER_CLOCK_FREQ: u32 = 144000000; // Master clock (CLKPLL) is the PLL clock (see main.rs).
-const BASE_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1; // Base clock divisor is 1 so HCLK = (CLKPLL/1).
+const BASE_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 2; // Base clock divisor is 2 so HCLK = (CLKPLL/2).
 const PLK2_CLOCK_FREQ: u32 = BASE_CLOCK_FREQ / 2; // APB2 clock divisor is 2 so PCLK2 = (HCLK/2).
 const BAUD_RATE: u32 = 400000; // I2C baud rate is 400kbps.
 const MPU9250A_I2C_ADDRESS: u8 = 0x68; // MPU-9250A I2C bus address.
@@ -29,66 +29,67 @@ impl Mb9bf61xtI2c {
         return Self {};
     }
 
+    // MFS channel 6 register base: 0x4003.8600
     pub fn init_i2c(&mut self) {
         let p = unsafe { mb9bf61xt::Peripherals::steal() };
         let i2c6 = p.MFS6;
 
-        // Serial Mode register (SMR).
-        i2c6.i2c_i2c_smr()
-            .modify(|_, w| unsafe { w.md().bits(0x4) }); // I2C mode (operation mode 4).
-        i2c6.i2c_i2c_smr().modify(|_, w| w.wucr().clear_bit()); // Disable wake-up control.
-        i2c6.i2c_i2c_smr().modify(|_, w| w.rie().set_bit()); // Enable receive interrupt.
-        i2c6.i2c_i2c_smr().modify(|_, w| w.tie().clear_bit()); // Disable transmit interrupt. NOTE: this interrupts when TDR is empty.
+        i2c6.i2c_i2c_smr().write(|w| unsafe { w.md().bits(0x4) }); // I2C mode (operation mode 4).
 
-        // Disable before registers are set.
-        i2c6.i2c_i2c_ismk().write(|w| unsafe { w.bits(0) });
+        i2c6.i2c_i2c_ismk().write(|w| unsafe { w.bits(0x7F) });
+        i2c6.i2c_i2c_smr().write(|w| unsafe { w.bits(0x80) });
+        i2c6.i2c_i2c_ssr().write(|w| unsafe { w.bits(0) });
 
-        // Baud Rate Generator registers (BGR0 and BGR1).
-        // Baud rate formula: Reload Value = ((Bus Clock Frequency / Baud Rate) - 1).
-        // NOTE: datasheet indicates that these must be handled as a single 16-bit write.
-        let reload_value = ((PLK2_CLOCK_FREQ / BAUD_RATE) - 1) as u16;
-        i2c6.i2c_i2c_bgr()
-            .write(|w| unsafe { w.bits(reload_value) });
+        let reload_value = (PLK2_CLOCK_FREQ / BAUD_RATE) - 1;
+        let bgr_value = reload_value as u16;
+        i2c6.i2c_i2c_bgr().write(|w| unsafe { w.bits(bgr_value) });
 
-        // FIFO Control registers (FCR0 and FCR1).
-        // TODO
+        i2c6.i2c_i2c_isba().write(|w| unsafe { w.bits(0) });
 
-        // FIFO Byte register (FBYTE1 and FBYTE2) - set the receive FIFO level that generates a receive interrupt.
-        // NOTE: a read-modify-write cannot be used for this register.
-        // TODO
-
-        // 7-bit Slave Address Register (ISBA).
-        i2c6.i2c_i2c_isba().modify(|_, w| unsafe { w.bits(0) }); // Clear since we operate in master mode.
-
-        // 7-bit Slave Address Mask Register (ISMK).
-        // Set I2C slave address mask.
-        i2c6.i2c_i2c_ismk()
-            .modify(|_, w| unsafe { w.sm().bits(0x7F) });
         i2c6.i2c_i2c_ismk().modify(|_, w| w.en().set_bit()); // Enable I2C interface operations.
+
+        // // Serial Mode register (SMR).
+        // i2c6.i2c_i2c_smr()
+        //     .modify(|_, w| unsafe { w.md().bits(0x4) }); // I2C mode (operation mode 4).
+        // i2c6.i2c_i2c_smr().modify(|_, w| w.wucr().clear_bit()); // Disable wake-up control.
+        // i2c6.i2c_i2c_smr().modify(|_, w| w.rie().set_bit()); // Enable receive interrupt.
+        // i2c6.i2c_i2c_smr().modify(|_, w| w.tie().clear_bit()); // Disable transmit interrupt. NOTE: this interrupts when TDR is empty.
+
+        // // Disable before registers are set.
+        // i2c6.i2c_i2c_ismk().write(|w| unsafe { w.bits(0) });
+
+        // // Baud Rate Generator registers (BGR0 and BGR1).
+        // // Baud rate formula: Reload Value = ((Bus Clock Frequency / Baud Rate) - 1).
+        // // NOTE: datasheet indicates that these must be handled as a single 16-bit write.
+        // let reload_value = (PLK2_CLOCK_FREQ / BAUD_RATE) - 1;
+        // let bgr_value = reload_value as u16;
+        // i2c6.i2c_i2c_bgr().write(|w| unsafe { w.bits(bgr_value) });
+
+        // // FIFO Control registers (FCR0 and FCR1).
+        // // TODO
+
+        // // FIFO Byte register (FBYTE1 and FBYTE2) - set the receive FIFO level that generates a receive interrupt.
+        // // NOTE: a read-modify-write cannot be used for this register.
+        // // TODO
+
+        // // 7-bit Slave Address Register (ISBA).
+        // i2c6.i2c_i2c_isba().modify(|_, w| w.saen().clear_bit()); // Clear since we operate in master mode.
+
+        // // 7-bit Slave Address Mask Register (ISMK).
+        // // Set I2C slave address mask.
+        // //i2c6.i2c_i2c_ismk()
+        // //.modify(|_, w| unsafe { w.sm().bits(0x7F) });
+        // i2c6.i2c_i2c_ismk().modify(|_, w| w.en().set_bit()); // Enable I2C interface operations.
 
         // Clear the transmit queue and receive data.
         unsafe { TRANSMIT_QUEUE.clear() };
         unsafe { RECEIVE_DATA.clear() };
 
+        i2c6.i2c_i2c_smr().modify(|_, w| w.rie().set_bit()); // Enable receive interrupt.
+
         // Enable the MFS6TX (I2C TX) and MFS6RX (I2C RX) interrupts.
         unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6TX) };
         unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6RX) };
-    }
-
-    fn i2c_master_start() {
-        let p = unsafe { mb9bf61xt::Peripherals::steal() };
-        let i2c6 = p.MFS6;
-
-        if unsafe { TRANSMIT_QUEUE.is_empty() } == false {
-            // Write slave address.
-            Mb9bf61xtI2c::i2c_write_tdr_byte(unsafe { TRANSMIT_QUEUE.pop_back().unwrap() });
-
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().set_bit()); // Select master mode.
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.acke().set_bit()); // Enable ACK.
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.inte().set_bit()); // Enable interrupt when transmit happens or bus error.
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.act_scc().clear_bit()); // Generate a start condition.
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.wsel().clear_bit()); // TODO - set for receive?
-        }
     }
 
     // NOTE: this is a blocking call.
@@ -101,6 +102,7 @@ impl Mb9bf61xtI2c {
         // Start the master transaction.
         Mb9bf61xtI2c::i2c_master_start();
 
+        // TODO: Need lock.
         while unsafe { RECEIVE_DATA.is_empty() } {}
 
         // TODO: handle multiple bytes.
@@ -149,7 +151,7 @@ impl Mb9bf61xtI2c {
                 }
                 let data = i2c6.i2c_i2c_rdr().read().bits();
                 println!("INFO: Received data 0x{:X}.", data);
-                unsafe { RECEIVE_DATA.push_back(data as u8) };
+                unsafe { RECEIVE_DATA.push_front(data as u8) };
             }
 
             //i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().clear_bit());
@@ -169,11 +171,36 @@ impl Mb9bf61xtI2c {
         i2c6.i2c_i2c_ibcr().modify(|_, w| w.int().clear_bit());
     }
 
+    fn i2c_master_start() {
+        let p = unsafe { mb9bf61xt::Peripherals::steal() };
+        let i2c6 = p.MFS6;
+
+        if unsafe { TRANSMIT_QUEUE.is_empty() } == false {
+            i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0) });
+
+            Mb9bf61xtI2c::i2c_write_tdr_byte(unsafe { TRANSMIT_QUEUE.pop_back().unwrap() });
+
+            i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x85) });
+
+            //i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0xA4) });
+
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.inte().set_bit()); // Enable interrupt when transmit happens or bus error.
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().set_bit()); // Select master mode.
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.act_scc().set_bit()); // Generate a start condition.
+
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.acke().set_bit()); // Enable ACK.
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.wsel().set_bit());
+            // Write slave address.
+        }
+    }
+
     fn i2c_master_data_tx() {
         let p = unsafe { mb9bf61xt::Peripherals::steal() };
         let i2c6 = p.MFS6;
 
         if i2c6.i2c_i2c_ibsr().read().rack() == true {
+            println!("NACK received!");
+        } else {
             println!("ACK received!");
         }
 
@@ -185,26 +212,35 @@ impl Mb9bf61xtI2c {
             println!("STOP condition");
             // ** stop condition ***
             // Clear the stop condition interrupt.
-            i2c6.i2c_i2c_ibsr().modify(|_, w| w.spc().clear_bit());
+            //i2c6.i2c_i2c_ibsr().modify(|_, w| w.spc().set_bit());
             // Stop condition and interrupt enabler.
             //i2c6.i2c_i2c_ibcr().modify(|_, w| w.cnde().clear_bit());
             //} else if unsafe { TRANSMIT_QUEUE.is_empty() } && i2c6.i2c_i2c_ibcr().read().int() == true {
         } else if unsafe { TRANSMIT_QUEUE.is_empty() } {
             println!("END of data");
             // ** end of data ***
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().clear_bit()); // Disable master mode.
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.inte().clear_bit());
-            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.cnde().set_bit());
+            // Stop condition.
+            i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x20) });
+
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().clear_bit()); // Disable master mode.
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.acke().set_bit());
+            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.inte().clear_bit());
         } else {
             // *** more data to transfer ***
             // Make sure the transmitter is emppty.
             if i2c6.i2c_i2c_ssr().read().tdre() == true {
                 // Write slave address.
-                Mb9bf61xtI2c::i2c_write_tdr_byte(unsafe { TRANSMIT_QUEUE.pop_back().unwrap() });
+                let data = unsafe { TRANSMIT_QUEUE.pop_back().unwrap() };
+                Mb9bf61xtI2c::i2c_write_tdr_byte(data);
+
+                i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x84) });
+
+                //i2c6.i2c_i2c_ibcr().modify(|_, w| w.acke().set_bit());
+                //i2c6.i2c_i2c_ibcr().modify(|_, w| w.wsel().set_bit());
             }
         }
+
         // Clear the interrupt.
-        //i2c6.i2c_i2c_ibcr().modify(|_, w| w.act_scc().clear_bit()); // Stop condition.
         i2c6.i2c_i2c_ibcr().modify(|_, w| w.int().clear_bit());
     }
 

@@ -6,7 +6,7 @@ use mb9bf61xt;
 use mb9bf61xt::Interrupt as interrupt;
 
 const MASTER_CLOCK_FREQ: u32 = 144000000; // Master clock (CLKPLL) is the PLL clock (see main.rs).
-const BASE_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 1; // Base clock divisor is 1 so HCLK = (CLKPLL/1).
+const BASE_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 2; // Base clock divisor is 2 so HCLK = (CLKPLL/2).
 const PLK2_CLOCK_FREQ: u32 = BASE_CLOCK_FREQ / 2; // APB2 clock divisor is 2 so PCLK2 = (HCLK/2).
 const BAUD_RATE: u32 = 115200; // Baud Rate.
 const MAX_TX_FIFO_DEPTH: u8 = 16; // Maximum transmit (and receive) FIFO depth is 16 x 9 bits.

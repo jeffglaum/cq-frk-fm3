@@ -49,7 +49,7 @@ fn init_clock() {
     //
     // NOTE: these pre-scalar values appear to be in violation of the datasheet (80MHz max base clock, 40MHz PLK2) but
     // they are in the sample code provide by Fujitsu and appear to be functional.
-    clock.bsc_psr().modify(|_, w| unsafe { w.bsr().bits(0) }); // Base clock (BSC_PSR) is same as CLKPLL clock.
+    clock.bsc_psr().modify(|_, w| unsafe { w.bsr().bits(0x1) }); // Base clock (BSC_PSR) is 1/2 CLKPLL clock.
     clock
         .apbc0_psr()
         .modify(|_, w| unsafe { w.apbc0().bits(0x1) }); // PLK0 (APBC0_PSR) is 1/2 Base clock.
