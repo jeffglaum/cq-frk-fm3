@@ -11,6 +11,7 @@ mod serial;
 pub use crate::serial::Mb9bf61xtUart;
 mod i2c;
 pub use crate::i2c::Mb9bf61xtI2c;
+use rtt_target::{rprintln, rtt_init_print};
 
 fn disable_wdg() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
@@ -24,7 +25,7 @@ fn disable_wdg() {
     wdg.wdg_ctl().modify(|_, w| w.inten().clear_bit());
 }
 
-fn initialize_gpio() {
+fn initialize_debug_gpio() {
     let p = unsafe { mb9bf61xt::Peripherals::steal() };
     let gpio = p.GPIO;
 
@@ -172,20 +173,28 @@ fn main() -> ! {
     // Disable the hardware watchdog timer.
     disable_wdg();
 
+    // Initialze RTT debug message interface.
+    rtt_init_print!();
+
     // Initialize the master clock to use the main (external) clock.
+    rprintln!("INFO: Initializing clocks.");
     init_clock();
 
     // Initialize UART pins.
+    rprintln!("INFO: Initializing pins.");
     init_pins();
 
     // Initialize GPIO for LED debugging.
-    initialize_gpio();
+    rprintln!("INFO: Initializing debug led gpio.");
+    initialize_debug_gpio();
 
     // Initialize the UART controller.
+    rprintln!("INFO: Initializing debug uart.");
     let mut uart4 = Mb9bf61xtUart::new();
     uart4.init_uart();
 
     // Initialize the I2C controller.
+    rprintln!("INFO: Initializing debug i2c controller.");
     let mut i2c6 = Mb9bf61xtI2c::new();
     i2c6.init_i2c();
 
@@ -197,6 +206,7 @@ fn main() -> ! {
     // Try reading the MPU-9250A "Who am I?" register.  It should return 0x71 (possibly 0x68?).
     let mut wai: [u8; 1] = [0];
     let _result = i2c6.read(0x75, &mut wai).unwrap();
+    rprintln!("MPU-9250A WHO_AM_I value=0x{:x}", wai[0]);
     println!("MPU-9250A WHO_AM_I value=0x{:x}", wai[0]);
 
     loop {}
