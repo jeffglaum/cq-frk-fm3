@@ -9,6 +9,7 @@ use mb9bf61xt;
 
 mod serial;
 pub use crate::serial::Mb9bf61xtUart;
+use rtt_target::{rprintln, rtt_init_print};
 
 const INPUT_LINE_LENGTH: usize = 64;
 
@@ -113,13 +114,19 @@ fn main() -> ! {
     // Disable the hardware watchdog timer.
     disable_wdg();
 
+    // Initialze RTT debug message interface.
+    rtt_init_print!();
+
     // Initialize the master clock to use the main (external) clock.
+    rprintln!("INFO: Initializing clocks.");
     init_clock();
 
     // Initialize UART pins.
+    rprintln!("INFO: Initializing pins.");
     init_pins();
 
     // Initialize the UART controller.
+    rprintln!("INFO: Initializing uart.");
     let mut uart4 = Mb9bf61xtUart::new();
     uart4.init_uart();
 
