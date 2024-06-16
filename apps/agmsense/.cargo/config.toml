@@ -1,5 +1,5 @@
 [target.thumbv7m-none-eabi]
-runner = '/Users/jeffglaum/repos/probe-rs/target/release/probe-rs run --chip MB9BF618T'
+runner = 'probe-rs run --chip MB9BF618T'
 
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 # uncomment ONE of these three option to make `cargo run` start a GDB session
