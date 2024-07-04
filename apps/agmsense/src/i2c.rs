@@ -62,8 +62,8 @@ impl Mb9bf61xtI2c {
         i2c6.i2c_i2c_ismk().modify(|_, w| w.en().set_bit()); // Enable I2C interface operations.
 
         // Clear the transmit queue and receive data queue.
-        unsafe { TRANSMIT_QUEUE.clear() };
-        unsafe { RECEIVE_DATA.clear() };
+        //unsafe { TRANSMIT_QUEUE.clear() };
+        //unsafe { RECEIVE_DATA.clear() };
 
         // Enable the MFS6TX (I2C TX) and MFS6RX (I2C RX) interrupts.
         unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6TX) };
@@ -238,17 +238,37 @@ impl embedded_hal::i2c::I2c for Mb9bf61xtI2c {
         address: u8,
         operations: &mut [Operation<'_>],
     ) -> Result<(), Self::Error> {
-        for (_i, operation) in operations.iter_mut().enumerate() {
-            match operation {
-                Operation::Read(buf) => {
-                    let _result = Mb9bf61xtI2c::read_i2c_bytes(address, buf);
+        let mut oi = operations.iter_mut();
+        if let Some(mut prev_op) = oi.next() {
+            // 1. generate START for operation
+            match &prev_op {
+                Operation::Read(buf) => Mb9bf61xtI2c::prepare_read(address)?,
+                Operation::Write(buf) => Mb9bf61xtI2c::prepare_write(address)?,
+            };
+            for op in oi {
+                // 2. execute previous operation
+                match &mut prev_op {
+                    Operation::Read(buf) => Mb9bf61xtI2c::read_i2c_bytes(buf)?,
+                    Operation::Write(buf) => Mb9bf61xtI2c::write_i2c_bytes(buf)?,
+                };
+                // 3. if operation changes type we must generate a new START
+                match (&prev_op, &op) {
+                    (Operation::Read(_), Operation::Write(_)) => {
+                        Mb9bf61xtI2c::prepare_write(address)?
+                    }
+                    (Operation::Write(_), Operation::Read(_)) => {
+                        Mb9bf61xtI2c::prepare_read(address)?
+                    }
+                    _ => {} // no changes if operation has not changed
                 }
-                Operation::Write(buf) => {
-                    let _result = Mb9bf61xtI2c::write_i2c_bytes(address, buf);
-                }
+                prev_op = op;
             }
+            // 4. here prev_op is teh last command, use variations that will generate stop
+            match prev_op {
+                Operation::Read(buf) => Mb9bf61xtI2c::read_i2c_wo_prepare(buf)?,
+                Operation::Write(buf) => Mb9bf61xtI2c::write_i2c_wo_prepare(buf)?,
+            };
         }
-
         Ok(())
     }
 }
@@ -256,11 +276,9 @@ impl embedded_hal::i2c::I2c for Mb9bf61xtI2c {
 #[interrupt]
 fn MFS6TX() {
     println!("TX interrupt");
-    Mb9bf61xtI2c::i2c_master_data_tx();
 }
 
 #[interrupt]
 fn MFS6RX() {
     println!("RX interrupt");
-    Mb9bf61xtI2c::i2c_master_data_rx();
 }
