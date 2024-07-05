@@ -1,8 +1,8 @@
-use circular_buffer::CircularBuffer;
 use cortex_m_rt::interrupt;
-use embedded_hal::i2c::Operation;
+use embedded_hal::i2c::{NoAcknowledgeSource, Operation};
 use mb9bf61xt;
 use mb9bf61xt::Interrupt as interrupt;
+use rtt_target::rprintln;
 
 use crate::println;
 
@@ -14,19 +14,39 @@ const MASTER_CLOCK_FREQ: u32 = 144000000; // Master clock (CLKPLL) is the PLL cl
 const HCLK_CLOCK_FREQ: u32 = MASTER_CLOCK_FREQ / 2; // Base clock divisor is 2 so HCLK = (CLKPLL/2).
 const PLK2_CLOCK_FREQ: u32 = HCLK_CLOCK_FREQ / 2; // APB2 clock divisor is 2 so PCLK2 = (HCLK/2).
 const I2C_BAUD_RATE: u32 = 400000; // I2C baud rate is 400kbps.
-const MPU9250A_I2C_ADDRESS: u8 = 0x68; // MPU-9250A I2C bus address.
-const TRANSMIT_QUEUE_DEPTH: usize = 4; // Transmit queue is 4 bytes deep.
-const RECEIVE_DATA_DEPTH: usize = 4; // Receive data is 4 bytes deep.
+                                   //const MPU9250A_I2C_ADDRESS: u8 = 0x68; // MPU-9250A I2C bus address.
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[non_exhaustive]
+pub enum Error {
+    Bus,
+    ArbitrationLoss,
+    NoAcknowledge(NoAcknowledgeSource),
+    Overrun,
+    ReservedAddress,
+    Other,
+}
+
+impl Error {
+    pub(crate) fn nack_addr(self) -> Self {
+        match self {
+            Error::NoAcknowledge(NoAcknowledgeSource::Unknown) => {
+                Error::NoAcknowledge(NoAcknowledgeSource::Address)
+            }
+            e => e,
+        }
+    }
+    pub(crate) fn nack_data(self) -> Self {
+        match self {
+            Error::NoAcknowledge(NoAcknowledgeSource::Unknown) => {
+                Error::NoAcknowledge(NoAcknowledgeSource::Data)
+            }
+            e => e,
+        }
+    }
+}
 
 pub struct Mb9bf61xtI2c;
-
-// Queued transmit requests.
-static mut TRANSMIT_QUEUE: CircularBuffer<TRANSMIT_QUEUE_DEPTH, u8> =
-    CircularBuffer::<TRANSMIT_QUEUE_DEPTH, u8>::new();
-
-// Data received from sensor.
-static mut RECEIVE_DATA: CircularBuffer<RECEIVE_DATA_DEPTH, u8> =
-    CircularBuffer::<RECEIVE_DATA_DEPTH, u8>::new();
 
 impl Mb9bf61xtI2c {
     pub fn new() -> Self {
@@ -61,43 +81,96 @@ impl Mb9bf61xtI2c {
         // 7-bit Slave Address Mask Register (ISMK).
         i2c6.i2c_i2c_ismk().modify(|_, w| w.en().set_bit()); // Enable I2C interface operations.
 
-        // Clear the transmit queue and receive data queue.
-        //unsafe { TRANSMIT_QUEUE.clear() };
-        //unsafe { RECEIVE_DATA.clear() };
-
         // Enable the MFS6TX (I2C TX) and MFS6RX (I2C RX) interrupts.
-        unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6TX) };
-        unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6RX) };
+        // TODO
+        //unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6TX) };
+        //unsafe { cortex_m::peripheral::NVIC::unmask(interrupt::MFS6RX) };
     }
 
-    // NOTE: this is a blocking call.
-    pub fn read_i2c_bytes(address: u8, buf: &mut [u8]) -> usize {
-        // Queue the transmit data.
-        unsafe { TRANSMIT_QUEUE.push_front(MPU9250A_I2C_ADDRESS << 1 & !0x1) }; // Write.
-        unsafe { TRANSMIT_QUEUE.push_front(address) };
-        unsafe { TRANSMIT_QUEUE.push_front(MPU9250A_I2C_ADDRESS << 1 | 0x1) }; // Read.
-
-        // Start the master transaction.
-        Mb9bf61xtI2c::i2c_master_start();
-
-        // TODO: Need lock.
-        while unsafe { RECEIVE_DATA.is_empty() } {}
-
-        // TODO: handle multiple bytes.
-        buf[0] = unsafe { RECEIVE_DATA.pop_back().unwrap() };
-
-        // TODO: return actual size.
-        return 1;
-    }
-
-    fn i2c_write_tdr_byte(b: u8) {
+    fn prepare_write(&self, address: u8) -> Result<(), Error> {
         let p = unsafe { mb9bf61xt::Peripherals::steal() };
         let i2c6 = p.MFS6;
-        println!("Sending 0x{:X}", b);
-        i2c6.i2c_i2c_tdr().write(|w| unsafe { w.bits(b as u16) });
+
+        // I2C Bus Control Register (IBCR).
+        i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0) }); // Clear.
+
+        // Write slave address to TDR.
+        i2c6.i2c_i2c_tdr()
+            .write(|w| unsafe { w.bits(address as u16) });
+
+        // I2C Bus Control Register (IBCR).
+        i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x85) }); // Enable master, enable interrupt, select interrupt.
+
+        Ok(())
     }
 
-    fn i2c_master_data_rx() {
+    fn prepare_read(&self, address: u8) -> Result<(), Error> {
+        let p = unsafe { mb9bf61xt::Peripherals::steal() };
+        let i2c6 = p.MFS6;
+
+        // I2C Bus Control Register (IBCR).
+        i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0) }); // Clear.
+
+        // Write slave address to TDR.
+        i2c6.i2c_i2c_tdr()
+            .write(|w| unsafe { w.bits(address as u16) });
+
+        // I2C Bus Control Register (IBCR).
+        i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x85) }); // Enable master, enable interrupt, select interrupt.
+
+        Ok(())
+    }
+
+    fn write_bytes(&self, wb: &[u8]) -> Result<(), Error> {
+        let p = unsafe { mb9bf61xt::Peripherals::steal() };
+        let i2c6 = p.MFS6;
+
+        let oi = wb.iter();
+        for op in oi {
+            let _ = self.check_and_clear_error_flags();
+
+            // Make sure the transmitter is empty.
+            while i2c6.i2c_i2c_ssr().read().tdre() == false {}
+
+            i2c6.i2c_i2c_tdr().write(|w| unsafe { w.bits(*op as u16) });
+
+            // I2C Bus Control Register (IBCR).
+            i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x84) }); // Master enable, interrupt enable, clear interrupt.
+
+            let _ = self.check_and_clear_error_flags();
+        }
+        Ok(())
+    }
+
+    fn read_bytes(&self, _rb: &mut [u8]) -> Result<(), Error> {
+        let p = unsafe { mb9bf61xt::Peripherals::steal() };
+        let i2c6 = p.MFS6;
+
+        while i2c6.i2c_i2c_ssr().read().rdrf() == true {
+            let _ = self.check_and_clear_error_flags();
+            let data = i2c6.i2c_i2c_rdr().read().bits();
+            println!("INFO: Received data 0x{:X}.", data);
+        }
+        //i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().clear_bit());
+        //i2c6.i2c_i2c_ibcr().modify(|_, w| w.acke().clear_bit());
+        //i2c6.i2c_i2c_ibcr().modify(|_, w| w.cnde().set_bit());
+
+        if i2c6.i2c_i2c_ibsr().read().rsc() == true {
+            // clear restart condition
+            i2c6.i2c_i2c_ibsr().modify(|_, w| w.rsc().clear_bit());
+        }
+        Ok(())
+    }
+
+    fn read_wo_prepare(&mut self, _rb: &mut [u8]) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn write_wo_prepare(&mut self, _wb: &[u8]) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn check_and_clear_error_flags(&self) -> Result<(), Error> {
         let p = unsafe { mb9bf61xt::Peripherals::steal() };
         let i2c6 = p.MFS6;
 
@@ -119,57 +192,7 @@ impl Mb9bf61xtI2c {
 
             // restart
             i2c6.i2c_i2c_ismk().modify(|_, w| w.en().set_bit());
-        } else if i2c6.i2c_i2c_ssr().read().rdrf() == true
-            && i2c6.i2c_i2c_ibsr().read().fbt() == false
-        {
-            // TODO
-            loop {
-                if i2c6.i2c_i2c_ssr().read().rdrf() == false {
-                    break;
-                }
-                let data = i2c6.i2c_i2c_rdr().read().bits();
-                println!("INFO: Received data 0x{:X}.", data);
-                unsafe { RECEIVE_DATA.push_front(data as u8) };
-            }
-
-            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.mss().clear_bit());
-            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.acke().clear_bit());
-            //i2c6.i2c_i2c_ibcr().modify(|_, w| w.cnde().set_bit());
-
-            if i2c6.i2c_i2c_ibsr().read().rsc() == true {
-                // clear restart condition
-                i2c6.i2c_i2c_ibsr().modify(|_, w| w.rsc().clear_bit());
-            }
-        } else {
-            // Do nothing
-        }
-
-        // clear interrupt
-        //i2c6.i2c_i2c_ibcr().modify(|_, w| w.act_scc().clear_bit());
-        i2c6.i2c_i2c_ibcr().modify(|_, w| w.int().clear_bit());
-    }
-
-    fn i2c_master_start() {
-        let p = unsafe { mb9bf61xt::Peripherals::steal() };
-        let i2c6 = p.MFS6;
-
-        if unsafe { TRANSMIT_QUEUE.is_empty() } == false {
-            // I2C Bus Control Register (IBCR).
-            i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0) }); // Clear.
-
-            // Write slave address to TDR.
-            Mb9bf61xtI2c::i2c_write_tdr_byte(unsafe { TRANSMIT_QUEUE.pop_back().unwrap() });
-
-            // I2C Bus Control Register (IBCR).
-            i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x85) }); // Enable master, enable interrupt, select interrupt.
-        }
-    }
-
-    fn i2c_master_data_tx() {
-        let p = unsafe { mb9bf61xt::Peripherals::steal() };
-        let i2c6 = p.MFS6;
-
-        if i2c6.i2c_i2c_ibsr().read().rack() == true {
+        } else if i2c6.i2c_i2c_ibsr().read().rack() == true {
             // If SDA is high (true), it's a NACK.
             println!("NACK received!");
             // TODO
@@ -179,52 +202,9 @@ impl Mb9bf61xtI2c {
         } else if i2c6.i2c_i2c_ibsr().read().al() == true {
             println!("ARBITRATION lost");
             // TODO
-        } else if i2c6.i2c_i2c_ibsr().read().spc() == true {
-            println!("STOP condition");
-            // TODO
-        } else {
-            if i2c6.i2c_i2c_ibsr().read().trx() == true {
-                // *** more data to transfer ***
-                // Make sure the transmitter is empty.
-                if i2c6.i2c_i2c_ssr().read().tdre() == true
-                    && unsafe { TRANSMIT_QUEUE.is_empty() == false }
-                {
-                    // Write slave address.
-                    Mb9bf61xtI2c::i2c_write_tdr_byte(unsafe { TRANSMIT_QUEUE.pop_back().unwrap() });
-
-                    // I2C Bus Control Register (IBCR).
-                    i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x84) }); // Master enable, interrupt enable, clear interrupt.
-                }
-            } else {
-                println!("Read Data");
-                // *** Data to read ***
-                loop {
-                    if i2c6.i2c_i2c_ssr().read().rdrf() == false {
-                        break;
-                    }
-                    let data = i2c6.i2c_i2c_rdr().read().bits();
-                    println!("INFO: Received data 0x{:X}.", data);
-                    unsafe { RECEIVE_DATA.push_front(data as u8) };
-                }
-                // I2C Bus Control Register (IBCR).
-                //let mut v = i2c6.i2c_i2c_ibcr().read().bits();
-                //v &= !(0x25); // Clear ACK, interrupt enable, clear interrupt.
-                //v |= 0x10; // Set WSEL.
-                //i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(v) }); // Send ACK.
-
-                // I2C Bus Control Register (IBCR).
-                i2c6.i2c_i2c_ibcr().write(|w| unsafe { w.bits(0x20) }); // Stop condition.
-            }
-
-            // Clear the interrupt regardles of whether it was cleared above.
-            i2c6.i2c_i2c_ibcr().modify(|_, w| w.int().clear_bit());
         }
-    }
 
-    // NOTE: this is a blocking call.
-    pub fn write_i2c_bytes(address: u8, _buf: &mut &[u8]) -> usize {
-        println!("INFO: I2C write to address 0x{:X}", address);
-        return 0;
+        Ok(())
     }
 }
 
@@ -241,32 +221,28 @@ impl embedded_hal::i2c::I2c for Mb9bf61xtI2c {
         let mut oi = operations.iter_mut();
         if let Some(mut prev_op) = oi.next() {
             // 1. generate START for operation
-            match &prev_op {
-                Operation::Read(buf) => Mb9bf61xtI2c::prepare_read(address)?,
-                Operation::Write(buf) => Mb9bf61xtI2c::prepare_write(address)?,
+            let _ = match &prev_op {
+                Operation::Read(_) => self.prepare_read(address),
+                Operation::Write(_) => self.prepare_write(address),
             };
             for op in oi {
                 // 2. execute previous operation
-                match &mut prev_op {
-                    Operation::Read(buf) => Mb9bf61xtI2c::read_i2c_bytes(buf)?,
-                    Operation::Write(buf) => Mb9bf61xtI2c::write_i2c_bytes(buf)?,
+                let _ = match &mut prev_op {
+                    Operation::Read(rb) => self.read_bytes(rb),
+                    Operation::Write(wb) => self.write_bytes(wb),
                 };
                 // 3. if operation changes type we must generate a new START
-                match (&prev_op, &op) {
-                    (Operation::Read(_), Operation::Write(_)) => {
-                        Mb9bf61xtI2c::prepare_write(address)?
-                    }
-                    (Operation::Write(_), Operation::Read(_)) => {
-                        Mb9bf61xtI2c::prepare_read(address)?
-                    }
-                    _ => {} // no changes if operation has not changed
-                }
+                let _ = match (&prev_op, &op) {
+                    (Operation::Read(_), Operation::Write(_)) => self.prepare_write(address),
+                    (Operation::Write(_), Operation::Read(_)) => self.prepare_read(address),
+                    _ => Ok(()),
+                };
                 prev_op = op;
             }
             // 4. here prev_op is teh last command, use variations that will generate stop
-            match prev_op {
-                Operation::Read(buf) => Mb9bf61xtI2c::read_i2c_wo_prepare(buf)?,
-                Operation::Write(buf) => Mb9bf61xtI2c::write_i2c_wo_prepare(buf)?,
+            let _ = match prev_op {
+                Operation::Read(rb) => self.read_wo_prepare(rb),
+                Operation::Write(wb) => self.write_wo_prepare(wb),
             };
         }
         Ok(())
@@ -275,10 +251,10 @@ impl embedded_hal::i2c::I2c for Mb9bf61xtI2c {
 
 #[interrupt]
 fn MFS6TX() {
-    println!("TX interrupt");
+    rprintln!("TX interrupt");
 }
 
 #[interrupt]
 fn MFS6RX() {
-    println!("RX interrupt");
+    rprintln!("RX interrupt");
 }
