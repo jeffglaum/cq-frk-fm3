@@ -177,26 +177,31 @@ fn main() -> ! {
     rtt_init_print!();
 
     // Initialize the master clock to use the main (external) clock.
-    rprintln!("INFO: Initializing clocks.");
+    rprintln!("INFO: initializing clocks");
     init_clock();
 
     // Initialize UART pins.
-    rprintln!("INFO: Initializing pins.");
+    rprintln!("INFO: initializing pins");
     init_pins();
 
     // Initialize GPIO for LED debugging.
-    rprintln!("INFO: Initializing debug led gpio.");
+    rprintln!("INFO: initializing debug led gpio");
     initialize_debug_gpio();
 
     // Initialize the UART controller.
-    rprintln!("INFO: Initializing debug uart.");
+    rprintln!("INFO: initializing debug uart");
     let mut uart4 = Mb9bf61xtUart::new();
     uart4.init_uart();
 
-    // Initialize the I2C controller.
-    rprintln!("INFO: Initializing debug i2c controller.");
+    // Initialize the i2c controller.
+    rprintln!("INFO: initializing i2c controller");
     let mut i2c6 = Mb9bf61xtI2c::new();
-    i2c6.init_i2c();
+    match i2c6.init() {
+        Ok(()) => {}
+        Err(e) => {
+            rprintln!("ERROR: failed to initialize i2c controller [{:?}]", e);
+        }
+    };
 
     // Print banner and command list.
     print_banner();
@@ -204,10 +209,11 @@ fn main() -> ! {
     println!("");
 
     // Try reading the MPU-9250A "Who am I?" register.  It should return 0x71 (possibly 0x68?).
-    let mut wai: [u8; 1] = [0];
-    let _result = i2c6.read(0x75, &mut wai).unwrap();
-    rprintln!("MPU-9250A WHO_AM_I value=0x{:x}", wai[0]);
-    println!("MPU-9250A WHO_AM_I value=0x{:x}", wai[0]);
+    const MPU9250A_I2C_ADDRESS: u8 = 0x68;
+    let wb: [u8; 1] = [0x75];
+    let mut rb: [u8; 1] = [0];
+    let _result = i2c6.write_read(MPU9250A_I2C_ADDRESS, &wb, &mut rb).unwrap();
+    rprintln!("MPU-9250A WHO_AM_I value={:#02x}", rb[0]);
 
     loop {}
 }
